@@ -9,8 +9,8 @@ from tempest_emb.types import WalkData
 class WalkGenerator:
     """Wrapper around Tempest's TemporalRandomWalk for backward walk generation."""
 
-    def __init__(self, config: Config, is_directed: bool = True):
-        self.trw = TemporalRandomWalk(is_directed=is_directed)
+    def __init__(self, config: Config):
+        self.trw = TemporalRandomWalk(is_directed=config.is_directed)
         self.max_walk_len = config.max_walk_len
         self.num_walks_per_node = config.num_walks_per_node
         self.walk_bias = config.walk_bias

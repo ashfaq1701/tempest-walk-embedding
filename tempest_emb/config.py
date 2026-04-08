@@ -4,7 +4,6 @@ from pydantic import BaseModel
 class Config(BaseModel):
     # Embeddings
     d_emb: int = 128
-    d_node: int = 0  # 0 = no node features; set to feature dim if present
 
     # Link prediction MLP
     d_hidden_link: int = 128
@@ -36,6 +35,8 @@ class Config(BaseModel):
     # Data
     dataset: str  # required — no default
     data_dir: str = "data/"
+    is_directed: bool  # required — dataset-specific
+    max_node_count: int  # required — node IDs are expected to be [0, max_node_count)
 
     # System
     use_gpu: bool = False

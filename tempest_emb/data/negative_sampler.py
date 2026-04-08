@@ -14,9 +14,9 @@ class NegativeSampler:
     Not used for embedding training. Accumulates history across all batches.
     """
 
-    def __init__(self, config: Config, is_directed: bool = True):
+    def __init__(self, config: Config):
         self.sampler = NegativeEdgeSampler(
-            is_directed=is_directed,
+            is_directed=config.is_directed,
             num_neg_per_pos=config.link_pred_negatives_per_positive,
         )
         self.num_neg_per_pos = config.link_pred_negatives_per_positive
