@@ -32,5 +32,8 @@ def uniformity_loss(
     z = F.normalize(e_target(batch_node_ids), dim=-1)  # [S, d]
     gram = z @ z.T                                      # [S, S]
     sq_dist = 2 - 2 * gram
-    mask_diag = ~torch.eye(len(z), dtype=torch.bool, device=z.device)
-    return torch.exp(-temperature * sq_dist)[mask_diag].mean()
+    exp_mat = torch.exp(-temperature * sq_dist)         # [S, S]
+    # Diagonal is exp(-temperature * 0) = 1 at each slot (S entries total).
+    # Subtract analytically instead of materializing a boolean-masked copy.
+    S = z.shape[0]
+    return (exp_mat.sum() - S) / (S * (S - 1))
