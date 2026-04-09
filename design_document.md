@@ -537,53 +537,6 @@ No GRU. No negative encoding. No pair extraction.
 
 ---
 
-## 26. Project Structure
-
-```
-tempest-emb/
-├── tempest_emb/
-│   ├── __init__.py
-│   ├── config.py                    # Pydantic config (all fields above)
-│   ├── types.py                     # Batch, WalkData containers
-│   ├── data/
-│   │   ├── __init__.py
-│   │   ├── dataset.py               # TGN-style loading, chronological split, batching
-│   │   └── negative_sampler.py      # Wraps NegativeEdgeSampler (two instances)
-│   ├── walks/
-│   │   ├── __init__.py
-│   │   └── walk_generator.py        # Tempest wrapper
-│   ├── models/
-│   │   ├── __init__.py
-│   │   ├── embedding_store.py       # E_target, E_context (Xavier init, pure storage)
-│   │   ├── walk_encoder.py          # Empty placeholder (v3 future)
-│   │   └── link_predictor.py        # MLP_link: 4*d_emb → d_hidden_link → 1
-│   ├── losses/
-│   │   ├── __init__.py
-│   │   ├── alignment.py             # Alignment on [W, L-1] grid + node feature concat
-│   │   ├── uniformity.py            # Gram matrix + analytical diagonal subtraction
-│   │   └── link_pred.py             # BCE loss
-│   ├── training/
-│   │   ├── __init__.py
-│   │   ├── trainer.py               # Main loop, owns sub-trainers + evaluator
-│   │   ├── embedding_trainer.py     # alignment + uniformity → optimizer_emb
-│   │   └── link_pred_trainer.py     # BCE → optimizer_link (embeddings frozen)
-│   ├── evaluation/
-│   │   ├── __init__.py
-│   │   └── evaluator.py             # Pessimistic MRR ranking
-│   └── utils/
-│       ├── __init__.py
-│       └── logging.py               # Checkpoint save/load, W&B logging
-├── scripts/
-│   ├── train.py                     # Entry point
-│   └── evaluate.py                  # Placeholder
-├── data/
-├── checkpoints/
-└── notebooks/
-    └── analysis.ipynb               # Placeholder
-```
-
----
-
 ## 27. Summary
 
 ```
