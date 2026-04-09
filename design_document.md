@@ -460,52 +460,6 @@ optimizer_link = Adam(
 
 ---
 
-## 22. Tempest API
-
-```python
-from _temporal_random_walk import TemporalRandomWalk
-
-trw = TemporalRandomWalk(is_directed=is_directed, use_gpu=use_gpu)
-trw.add_multiple_edges(sources, targets, timestamps, edge_features=None)
-
-nodes, ts, lens, ef = trw.get_random_walks_and_times_for_last_batch(
-    max_walk_len=max_walk_len,
-    walk_bias=walk_bias,
-    num_walks_per_node=num_walks_per_node,
-    walk_direction="Backward_In_Time"
-)
-# nodes: [W, L] int32, padding=-1
-# ts:    [W, L] int64, sentinel=INT_MAX
-# lens:  [W] uint64 → cast to int64 for PyTorch
-# ef:    [W, L-1, d_edge] float or None
-```
-
----
-
-## 23. NegativeEdgeSampler API
-
-```python
-from temporal_negative_edge_sampler import NegativeEdgeSampler
-
-# Two instances — num_neg_per_pos is fixed at construction
-train_sampler = NegativeEdgeSampler(is_directed=is_directed,
-                                     num_neg_per_pos=link_pred_negatives_per_positive)
-eval_sampler = NegativeEdgeSampler(is_directed=is_directed,
-                                    num_neg_per_pos=eval_negatives_per_positive)
-
-# Both ingested every batch
-train_sampler.add_batch(sources, targets, timestamps)
-eval_sampler.add_batch(sources, targets, timestamps)
-
-# Sample negatives
-neg_dict = train_sampler.sample_negatives()
-# neg_dict["sources"]: [B * num_neg] int32 flat
-# neg_dict["targets"]: [B * num_neg] int32 flat
-# Reshape to [B, num_neg] to align with positive edges
-```
-
----
-
 ## 24. Checkpoint Format
 
 Saved via `torch.save` with module `state_dict()`s:
@@ -520,20 +474,6 @@ Saved via `torch.save` with module `state_dict()`s:
     "config": config.dict(),
 }
 ```
-
----
-
-## 25. Efficiency Properties
-
-| Stage | Cost |
-|---|---|
-| Walk generation (Tempest) | ~200-400ms for 50K walks |
-| Embedding lookup + normalize | `O(W × L × d)` |
-| Alignment (bmm) | One `[W, 1, d] × [W, d, L-1]` matmul |
-| Uniformity (gram + analytical diag) | One `[U, d] × [d, U]` matmul, U ≤ 20K |
-| Link prediction | Negligible |
-
-No GRU. No negative encoding. No pair extraction.
 
 ---
 
