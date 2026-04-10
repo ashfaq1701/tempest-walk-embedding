@@ -32,6 +32,8 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--target-batch-size", type=int, default=50000)
     p.add_argument("--emb-lr", type=float, default=1e-3)
     p.add_argument("--link-lr", type=float, default=1e-3)
+    p.add_argument("--negatives-per-positive-train", type=int, default=10)
+    p.add_argument("--negatives-per-positive-eval", type=int, default=5)
     p.add_argument("--seed", type=int, default=42)
     p.add_argument("--checkpoint", type=str, default=None,
                    help="Path to save checkpoint at end of run")
@@ -50,6 +52,8 @@ def build_config(args: argparse.Namespace) -> Config:
         target_batch_size=args.target_batch_size,
         emb_lr=args.emb_lr,
         link_lr=args.link_lr,
+        negatives_per_positive_train=args.negatives_per_positive_train,
+        negatives_per_positive_eval=args.negatives_per_positive_eval,
         seed=args.seed,
     )
 
@@ -73,7 +77,8 @@ def main() -> None:
     evaluator = Evaluator(
         embedding_store=trainer.embedding_store,
         link_predictor=trainer.link_predictor,
-        neg_sampler_eval=trainer.neg_sampler_eval,
+        num_nodes=config.max_node_count,
+        negatives_per_positive=config.negatives_per_positive_eval,
         device=trainer.device,
     )
 

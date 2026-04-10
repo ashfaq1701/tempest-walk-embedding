@@ -23,9 +23,8 @@ class Config(BaseModel):
 
     # Link prediction loss
     alpha_link: float = 1.0  # α coefficient
-    link_pred_negatives_per_positive: int = 10
-    eval_negatives_per_positive: int = 5
-    historical_negative_percentage: float = 0.5
+    negatives_per_positive_train: int = 10
+    negatives_per_positive_eval: int = 5
 
     # Training
     emb_lr: float = 1e-3

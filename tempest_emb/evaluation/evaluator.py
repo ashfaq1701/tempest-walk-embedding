@@ -2,7 +2,7 @@ from typing import Tuple
 
 import torch
 
-from tempest_emb.data.negative_sampler import NegativeSampler
+from tempest_emb.data.negative_sampler import sample_negatives
 from tempest_emb.models.embedding_store import EmbeddingStore
 from tempest_emb.models.link_predictor import LinkPredictor
 from tempest_emb.types import Batch
@@ -12,41 +12,36 @@ class Evaluator:
     """Streaming link-prediction evaluator.
 
     For each batch (called before ingestion by the Trainer):
-      1. Sample `eval_negatives_per_positive` negatives from the shared
-         eval sampler (which carries full stream history).
-      2. Interleave positives with their own negatives so each positive is
-         grouped with its K negatives: [pos_1, neg_1_1..neg_1_K, pos_2, ...].
-      3. Forward a single batch through EmbeddingStore + LinkPredictor
-         under `torch.no_grad()`.
-      4. Reshape scores to [B, 1+K], compute the pessimistic rank of each
-         positive (ties counted against the positive), and aggregate
-         sum of reciprocal ranks.
-
-    The Trainer calls `evaluate_batch(batch)` first, then ingests the batch
-    (updating both the walk graph and the eval sampler for subsequent calls).
+      1. Sample negatives uniformly at random.
+      2. Interleave positives with their negatives: [pos_1, neg_1_1..neg_1_K, pos_2, ...].
+      3. Forward through EmbeddingStore + LinkPredictor under no_grad.
+      4. Compute pessimistic MRR (ties counted against the positive).
     """
 
     def __init__(
         self,
         embedding_store: EmbeddingStore,
         link_predictor: LinkPredictor,
-        neg_sampler_eval: NegativeSampler,
+        num_nodes: int,
+        negatives_per_positive: int,
         device: torch.device,
     ):
         self.embedding_store = embedding_store
         self.link_predictor = link_predictor
-        self.neg_sampler_eval = neg_sampler_eval
+        self.num_nodes = num_nodes
+        self.negatives_per_positive = negatives_per_positive
         self.device = device
 
     @torch.no_grad()
     def evaluate_batch(self, batch: Batch) -> Tuple[float, int]:
-        """Rank each positive in the batch against its sampled negatives.
+        """Rank each positive against its sampled negatives.
 
         Returns:
             (sum_of_reciprocal_ranks, num_positive_edges)
-            The caller aggregates across batches and divides at the end.
         """
-        neg_src, neg_tgt = self.neg_sampler_eval.sample(batch)  # [B, K]
+        neg_src, neg_tgt = sample_negatives(
+            batch, self.num_nodes, self.negatives_per_positive
+        )
 
         pos_src = torch.from_numpy(batch.src).long().to(self.device)  # [B]
         pos_tgt = torch.from_numpy(batch.tgt).long().to(self.device)  # [B]

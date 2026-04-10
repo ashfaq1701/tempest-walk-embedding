@@ -92,6 +92,8 @@ Common optional flags:
 | `--target-batch-size` | 50000 | Approximate edges per batch (timestamp-respecting) |
 | `--emb-lr` | 1e-3 | Embedding optimizer learning rate |
 | `--link-lr` | 1e-3 | Link-prediction optimizer learning rate |
+| `--negatives-per-positive-train` | 10 | Random negatives per positive during training |
+| `--negatives-per-positive-eval` | 5 | Random negatives per positive during evaluation |
 | `--seed` | 42 | Random seed |
 | `--checkpoint` | none | Path to save the final checkpoint |
 
@@ -101,7 +103,7 @@ All other hyperparameters (walk length, walks per node, decay exponents, loss co
 
 After training, validation and test phases run streaming MRR evaluation:
 
-- For each positive edge, score it against `eval_negatives_per_positive` negatives drawn from the `NegativeEdgeSampler` (50% historical, 50% random).
+- For each positive edge, score it against `negatives_per_positive_eval` uniformly random negatives.
 - Use **pessimistic ranking**: ties count against the positive (`rank = (neg_scores >= pos_score).sum() + 1`).
 - Report `MRR = mean(1 / rank)` across all batch edges.
 
@@ -128,7 +130,7 @@ During val/test, embeddings continue updating (the embedding trainer runs after 
 - PyTorch
 - NumPy
 - Pydantic
-- [Tempest](https://github.com/) temporal random walk library (for `TemporalRandomWalk` and `NegativeEdgeSampler`)
+- [temporal-random-walk](https://github.com/) — Tempest temporal random walk library
 
 ## License
 

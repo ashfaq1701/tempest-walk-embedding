@@ -4,7 +4,7 @@ import numpy as np
 import torch
 
 from tempest_emb.config import Config
-from tempest_emb.data.negative_sampler import NegativeSampler
+from tempest_emb.data.negative_sampler import sample_negatives
 from tempest_emb.models.embedding_store import EmbeddingStore
 from tempest_emb.models.link_predictor import LinkPredictor
 from tempest_emb.training.embedding_trainer import EmbeddingTrainer
@@ -16,16 +16,6 @@ from tempest_emb.walks.walk_generator import WalkGenerator
 
 class Trainer:
     """Main loop orchestrator.
-
-    Owns:
-      - EmbeddingStore (E_target, E_context, optional node feature buffer)
-      - LinkPredictor (the MLP)
-      - WalkGenerator (Tempest wrapper)
-      - Two NegativeSampler instances: one for training, one for evaluation.
-        Both are kept in sync with the stream so the Evaluator can pull
-        from `neg_sampler_eval` at eval time.
-      - Two optimizers (one for embeddings, one for link predictor)
-      - EmbeddingTrainer + LinkPredTrainer sub-trainers
 
     Streaming protocol:
       - train(): ingest → walks → train_embedding → train_link_pred
@@ -58,10 +48,6 @@ class Trainer:
         ).to(self.device)
 
         self.walk_gen = WalkGenerator(config)
-        self.neg_sampler_train = NegativeSampler(config)
-        self.neg_sampler_eval = NegativeSampler(
-            config, num_neg_per_pos=config.eval_negatives_per_positive
-        )
 
         # Optimizers
         self.optimizer_emb = torch.optim.Adam(
@@ -91,16 +77,6 @@ class Trainer:
         self.batch_idx = 0
 
     # ------------------------------------------------------------------ #
-    # Ingestion helpers
-    # ------------------------------------------------------------------ #
-
-    def _ingest(self, batch: Batch) -> None:
-        """Push a batch into Tempest and both negative samplers."""
-        self.walk_gen.add_edges(batch.src, batch.tgt, batch.ts)
-        self.neg_sampler_train.add_batch(batch)
-        self.neg_sampler_eval.add_batch(batch)
-
-    # ------------------------------------------------------------------ #
     # Phases
     # ------------------------------------------------------------------ #
 
@@ -108,21 +84,25 @@ class Trainer:
         """Training phase.
 
         For each batch:
-          1. Ingest into Tempest + both samplers.
+          1. Ingest into Tempest.
           2. Generate walks.
           3. Train embeddings (alignment + uniformity).
           4. Train link predictor (BCE on positives + sampled negatives).
         """
         self.link_predictor.train()
         for batch in batches:
-            self._ingest(batch)
+            self.walk_gen.add_edges(batch.src, batch.tgt, batch.ts)
 
             walks = self.walk_gen.generate()
             l_align, l_uniform, l_total_emb = self.embedding_trainer.step(
                 walks, batch.t_max
             )
 
-            neg_src, neg_tgt = self.neg_sampler_train.sample(batch)
+            neg_src, neg_tgt = sample_negatives(
+                batch,
+                self.config.max_node_count,
+                self.config.negatives_per_positive_train,
+            )
             l_link = self.link_pred_trainer.step(batch, neg_src, neg_tgt)
 
             self.batch_idx += 1
@@ -145,16 +125,9 @@ class Trainer:
         """Val/test phase with streaming evaluation.
 
         For each batch:
-          1. (If evaluator provided) predict on the batch's positive edges
-             BEFORE ingesting, ranked against eval negatives. Accumulate MRR.
-          2. Ingest into Tempest + both samplers.
+          1. (If evaluator provided) rank positives against eval negatives.
+          2. Ingest into Tempest.
           3. Update embeddings (no link predictor training during val/test).
-
-        Args:
-            batches:   Iterable of Batch objects.
-            evaluator: Optional Evaluator instance with `evaluate_batch(batch)
-                       → (rr_sum, n)`.
-            phase:     "val" or "test" (used as a log prefix).
 
         Returns:
             Aggregate MRR if evaluator is provided, else None.
@@ -169,7 +142,7 @@ class Trainer:
                 total_rr += rr_sum
                 total_n += n
 
-            self._ingest(batch)
+            self.walk_gen.add_edges(batch.src, batch.tgt, batch.ts)
 
             walks = self.walk_gen.generate()
             self.embedding_trainer.step(walks, batch.t_max)

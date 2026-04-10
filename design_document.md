@@ -62,7 +62,6 @@ Walks are generated via `get_random_walks_and_times_for_last_batch(...)`:
 Batch of edges (src, tgt, t) arrives
    ↓
 Ingest into Tempest (update streaming graph)
-Ingest into both NegativeEdgeSampler instances (train + eval)
    ↓
 Generate backward walks (num_walks_per_node per starting node)
    ↓
@@ -172,7 +171,7 @@ p = sigmoid(MLP_link([E_target[u] | E_target[v] | E_context[u] | E_context[v]]))
 L_link = BCE(p, y)
 ```
 
-Negatives from `NegativeEdgeSampler` (50% historical, 50% random). Only used here.
+Negatives are sampled uniformly at random (pure random targets, no exclusion — collision rate is negligible for any reasonably sized graph). Only used here.
 
 **Interleaved layout:** Positive and negative edges are arranged as `[pos_1, neg_1_1..neg_1_K, pos_2, neg_2_1..neg_2_K, ...]` via `cat + flatten` on `[B, 1+K]`. This keeps each positive grouped with its own negatives and makes MRR ranking trivially vectorizable.
 
@@ -265,14 +264,12 @@ No edge features, no walk information, no node features.
 
 ## 13. Negative Sampling (Link Prediction Only)
 
-**Two separate `NegativeEdgeSampler` instances**, because `NegativeEdgeSampler` fixes `num_neg_per_pos` at construction:
+Negatives are sampled via a stateless function `sample_negatives(batch, num_nodes, num_neg_per_pos)`. For each positive edge, the source is kept and the target is replaced with a uniformly random node from `[0, num_nodes)`. No history tracking or exclusion — collision with actual positives is negligible for any reasonably sized graph.
 
-| Instance | Purpose | `num_neg_per_pos` |
-|---|---|---|
-| `train_sampler` | Link prediction training | `link_pred_negatives_per_positive` |
-| `eval_sampler` | Evaluation | `eval_negatives_per_positive` |
-
-Both instances are kept in sync — every batch is ingested into both via `add_batch()`. The samplers accumulate all historical edges across the full training run and are never reset.
+| Context | `num_neg_per_pos` |
+|---|---|
+| Link prediction training | `negatives_per_positive_train` (default 10) |
+| Evaluation (val + test) | `negatives_per_positive_eval` (default 5) |
 
 No negatives are used for embedding training.
 
@@ -360,9 +357,8 @@ All initialized with Xavier-uniform.
 | `uniformity_temperature` | Temperature in exp(-t * sq_dist) | 2.0 |
 | `uniformity_cap` | Max nodes for gram matrix | 20000 |
 | `alpha_link` | Link prediction loss coefficient (α) | 1.0 |
-| `link_pred_negatives_per_positive` | Negatives for link pred training | 10 |
-| `eval_negatives_per_positive` | Negatives at evaluation | 5 |
-| `historical_negative_percentage` | Historical vs random split | 0.5 |
+| `negatives_per_positive_train` | Random negatives per positive (training) | 10 |
+| `negatives_per_positive_eval` | Random negatives per positive (evaluation) | 5 |
 | `emb_lr` | Embedding optimizer learning rate | 1e-3 |
 | `link_lr` | Link prediction optimizer learning rate | 1e-3 |
 | `target_batch_size` | Approximate edges per batch | 50000 |
@@ -433,9 +429,7 @@ Trainer
   ├── Evaluator            # MRR prediction
   ├── EmbeddingStore       # E_target, E_context (pure storage, Xavier init)
   ├── LinkPredictor        # MLP_link
-  ├── WalkGenerator        # Tempest wrapper
-  ├── NegativeSampler (train)   # link_pred_negatives_per_positive
-  └── NegativeSampler (eval)    # eval_negatives_per_positive
+  └── WalkGenerator        # Tempest wrapper
 ```
 
 `Trainer` owns all components and orchestrates:
@@ -495,7 +489,7 @@ Tempest → Backward Walks → Embedding Lookup
                                 ↓
               Link Prediction: MLP_link([Et(u) | Et(v) | Ec(u) | Ec(v)])
               Interleaved pos/neg layout
-              L_link = BCE (two NegativeEdgeSampler instances)
+              L_link = BCE (uniform random negatives)
                                 ↓
               L_total = L_embedding + α * L_link
                                 ↓
