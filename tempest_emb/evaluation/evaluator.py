@@ -43,7 +43,7 @@ class Evaluator:
         neg_src, neg_tgt = self.neg_sampler.sample(batch)
         B = len(batch.src)
 
-        all_u, all_v, counts, fixed_k = self._interleave(batch, neg_src, neg_tgt, B)
+        all_u, all_v, counts, is_fixed_k = self._interleave(batch, neg_src, neg_tgt, B)
 
         # Single forward pass
         e_target_u = self.embedding_store.target(all_u)
@@ -56,7 +56,7 @@ class Evaluator:
         )
 
         # Pessimistic MRR
-        total_rr = self._compute_mrr(prob, counts, B, fixed_k)
+        total_rr = self._compute_mrr(prob, counts, B, is_fixed_k)
         return total_rr, B
 
     def _interleave(
@@ -74,9 +74,9 @@ class Evaluator:
         Fixed-K ([B, K] arrays): vectorised cat + flatten.
         Variable-K (list-of-arrays): pre-allocated single-pass fill.
         """
-        fixed_k = isinstance(neg_src, np.ndarray) and neg_src.ndim == 2
+        is_fixed_k = isinstance(neg_src, np.ndarray) and neg_src.ndim == 2
 
-        if fixed_k:
+        if is_fixed_k:
             K = neg_src.shape[1]
             pos_src = torch.from_numpy(batch.src).long().to(self.device)
             pos_tgt = torch.from_numpy(batch.tgt).long().to(self.device)
@@ -104,21 +104,21 @@ class Evaluator:
             all_u = torch.from_numpy(all_src_np).to(self.device)
             all_v = torch.from_numpy(all_dst_np).to(self.device)
 
-        return all_u, all_v, counts, fixed_k
+        return all_u, all_v, counts, is_fixed_k
 
     def _compute_mrr(
         self,
         prob: torch.Tensor,
         counts: List[int],
         B: int,
-        fixed_k: bool,
+        is_fixed_k: bool,
     ) -> float:
         """Pessimistic MRR from flat scores + counts vector.
 
         Fixed-K (all counts equal): reshape to [B, 1+K], vectorised sum.
         Variable-K: scatter-based vectorised ranking (no Python loop).
         """
-        if fixed_k:
+        if is_fixed_k:
             K0 = counts[0]
             scores = prob.view(B, 1 + K0)
             pos_scores = scores[:, :1]      # [B, 1]
