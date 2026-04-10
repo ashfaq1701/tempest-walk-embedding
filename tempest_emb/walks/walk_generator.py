@@ -10,7 +10,7 @@ class WalkGenerator:
     """Wrapper around Tempest's TemporalRandomWalk for backward walk generation."""
 
     def __init__(self, config: Config):
-        self.trw = TemporalRandomWalk(is_directed=config.is_directed)
+        self.trw = TemporalRandomWalk(is_directed=config.is_directed, use_gpu=config.use_gpu, enable_weight_computation=True, timescale_bound=300)
         self.max_walk_len = config.max_walk_len
         self.num_walks_per_node = config.num_walks_per_node
         self.walk_bias = config.walk_bias

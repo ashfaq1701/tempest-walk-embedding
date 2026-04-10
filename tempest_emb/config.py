@@ -13,7 +13,7 @@ class Config(BaseModel):
     # Walks
     max_walk_len: int = 10
     num_walks_per_node: int = 5
-    walk_bias: str = "Exponential"
+    walk_bias: str = "ExponentialWeight"
 
     # Alignment loss
     temporal_decay_exp: float = 0.5  # β in (1+Δt)^(-β)
