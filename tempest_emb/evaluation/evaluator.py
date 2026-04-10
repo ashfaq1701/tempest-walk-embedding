@@ -18,7 +18,7 @@ class Evaluator:
          counts vector: [pos_0, neg_0_1..neg_0_K0, pos_1, neg_1_1..neg_1_K1, ...]
       3. Single forward pass through EmbeddingStore + LinkPredictor.
       4. Pessimistic MRR — reshape + vectorised sum for fixed-K,
-         torch.split for variable-K.
+         scatter-based vectorised ranking for variable-K.
     """
 
     def __init__(
@@ -43,7 +43,7 @@ class Evaluator:
         neg_src, neg_tgt = self.neg_sampler.sample(batch)
         B = len(batch.src)
 
-        all_u, all_v, counts = self._interleave(batch, neg_src, neg_tgt, B)
+        all_u, all_v, counts, fixed_k = self._interleave(batch, neg_src, neg_tgt, B)
 
         # Single forward pass
         e_target_u = self.embedding_store.target(all_u)
@@ -56,7 +56,7 @@ class Evaluator:
         )
 
         # Pessimistic MRR
-        total_rr = self._compute_mrr(prob, counts, B)
+        total_rr = self._compute_mrr(prob, counts, B, fixed_k)
         return total_rr, B
 
     def _interleave(
@@ -65,14 +65,14 @@ class Evaluator:
         neg_src,
         neg_tgt,
         B: int,
-    ) -> Tuple[torch.Tensor, torch.Tensor, List[int]]:
+    ) -> Tuple[torch.Tensor, torch.Tensor, List[int], bool]:
         """Build flat interleaved arrays and a counts vector.
 
         Layout: [pos_0, neg_0_1..neg_0_K0, pos_1, neg_1_1..neg_1_K1, ...]
         counts: [K0, K1, ...] — number of negatives per positive.
 
         Fixed-K ([B, K] arrays): vectorised cat + flatten.
-        Variable-K (list-of-arrays): per-positive concat.
+        Variable-K (list-of-arrays): pre-allocated single-pass fill.
         """
         fixed_k = isinstance(neg_src, np.ndarray) and neg_src.ndim == 2
 
@@ -86,46 +86,62 @@ class Evaluator:
             all_v = torch.cat([pos_tgt.unsqueeze(1), neg_tgt_t], dim=1).flatten()
             counts = [K] * B
         else:
-            src_parts: List[np.ndarray] = []
-            dst_parts: List[np.ndarray] = []
+            # Pre-allocate and fill in one pass (avoids 4*B tiny allocations)
+            neg_lengths = [len(neg_tgt[i]) for i in range(B)]
+            total = B + sum(neg_lengths)
+            all_src_np = np.empty(total, dtype=np.int64)
+            all_dst_np = np.empty(total, dtype=np.int64)
             counts = []
+            offset = 0
             for i in range(B):
-                K_i = len(neg_tgt[i])
+                K_i = neg_lengths[i]
                 counts.append(K_i)
-                src_parts.append(np.array([batch.src[i]], dtype=np.int32))
-                src_parts.append(np.asarray(neg_src[i], dtype=np.int32))
-                dst_parts.append(np.array([batch.tgt[i]], dtype=np.int32))
-                dst_parts.append(np.asarray(neg_tgt[i], dtype=np.int32))
-            all_u = torch.from_numpy(np.concatenate(src_parts)).long().to(self.device)
-            all_v = torch.from_numpy(np.concatenate(dst_parts)).long().to(self.device)
+                all_src_np[offset] = batch.src[i]
+                all_src_np[offset + 1 : offset + 1 + K_i] = neg_src[i]
+                all_dst_np[offset] = batch.tgt[i]
+                all_dst_np[offset + 1 : offset + 1 + K_i] = neg_tgt[i]
+                offset += 1 + K_i
+            all_u = torch.from_numpy(all_src_np).to(self.device)
+            all_v = torch.from_numpy(all_dst_np).to(self.device)
 
-        return all_u, all_v, counts
+        return all_u, all_v, counts, fixed_k
 
     def _compute_mrr(
         self,
         prob: torch.Tensor,
         counts: List[int],
         B: int,
+        fixed_k: bool,
     ) -> float:
         """Pessimistic MRR from flat scores + counts vector.
 
         Fixed-K (all counts equal): reshape to [B, 1+K], vectorised sum.
-        Variable-K: torch.split by group sizes, per-group ranking.
+        Variable-K: scatter-based vectorised ranking (no Python loop).
         """
-        K0 = counts[0]
-        fixed_k = all(c == K0 for c in counts)
-
         if fixed_k:
+            K0 = counts[0]
             scores = prob.view(B, 1 + K0)
             pos_scores = scores[:, :1]      # [B, 1]
             neg_scores = scores[:, 1:]      # [B, K]
             rank = (neg_scores >= pos_scores).sum(dim=1) + 1  # [B]
             return (1.0 / rank.float()).sum().item()
 
+        # Fully vectorised scatter-based ranking (avoids B GPU syncs)
         group_sizes = [1 + c for c in counts]
-        groups = torch.split(prob, group_sizes)
-        total_rr = 0.0
-        for group in groups:
-            rank = (group[1:] >= group[0]).sum() + 1
-            total_rr += (1.0 / rank.float()).item()
-        return total_rr
+        group_sizes_t = torch.tensor(group_sizes, dtype=torch.long,
+                                     device=prob.device)
+        group_idx = torch.repeat_interleave(
+            torch.arange(B, device=prob.device), group_sizes_t
+        )
+
+        # Positive score = first element of each group
+        group_starts = torch.zeros(B, dtype=torch.long, device=prob.device)
+        group_starts[1:] = group_sizes_t[:-1].cumsum(0)
+        pos_scores = prob[group_starts]                        # [B]
+
+        # Per-element comparison against its group's positive score;
+        # scatter-sum gives rank = 1 (pos itself) + count(neg >= pos)
+        beats_pos = (prob >= pos_scores[group_idx]).float()
+        rank = torch.zeros(B, dtype=torch.float32, device=prob.device)
+        rank.scatter_add_(0, group_idx, beats_pos)
+        return (1.0 / rank).sum().item()
