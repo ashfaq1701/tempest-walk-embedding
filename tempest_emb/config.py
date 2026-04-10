@@ -34,8 +34,9 @@ class Config(BaseModel):
     target_batch_size: int = 50000
 
     # Data
-    dataset: str  # required — no default
-    data_dir: str = "data/"
+    dataset_file: str  # required — path to CSV (columns: u, i, ts, idx)
+    edge_features_file: Optional[str] = None  # path to edge features .npy
+    node_features_file: Optional[str] = None  # path to node features .npy
     is_directed: bool  # required — dataset-specific
     max_node_count: int  # required — node IDs are expected to be [0, max_node_count)
 

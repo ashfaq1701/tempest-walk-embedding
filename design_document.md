@@ -350,45 +350,46 @@ All initialized with Xavier-uniform.
 
 ### Hyperparameters
 
-| Parameter | Description | Default             |
-|---|---|---------------------|
-| `d_emb` | Embedding dimension | 128                 |
-| `d_hidden_link` | MLP_link hidden dimension | 128                 |
-| `max_walk_len` | Maximum walk length | 10                  |
-| `num_walks_per_node` | Walks per starting node | 5                   |
-| `walk_bias` | Tempest walk bias | "ExponentialWeight" |
-| `temporal_decay_exp` | Temporal decay exponent (β) | 0.5                 |
-| `eta_uniform` | Uniformity loss coefficient (η) | 1.0                 |
-| `uniformity_temperature` | Temperature in exp(-t * sq_dist) | 2.0                 |
-| `uniformity_cap` | Max nodes for gram matrix | 20000               |
-| `alpha_link` | Link prediction loss coefficient (α) | 1.0                 |
-| `negatives_per_positive_train` | Random negatives per positive (training) | 10                  |
-| `negatives_per_positive_eval` | Random negatives per positive (evaluation) | 5                   |
-| `train_ratio` | Fraction of edges for training (TGB-identical quantile split) | 0.70                |
-| `val_ratio` | Fraction of edges for validation (TGB-identical quantile split) | 0.15                |
-| `val_negative_file` | Path to TGB-format val negatives pickle (optional) | None                |
-| `test_negative_file` | Path to TGB-format test negatives pickle (optional) | None                |
-| `emb_lr` | Embedding optimizer learning rate | 1e-3                |
-| `link_lr` | Link prediction optimizer learning rate | 1e-3                |
-| `target_batch_size` | Approximate edges per batch | 50000               |
-| `max_node_count` | Total node count (required) | —                   |
-| `is_directed` | Graph directionality (required) | —                   |
-| `dataset` | Dataset name (required) | —                   |
-| `data_dir` | Dataset directory | "data/"             |
-| `use_gpu` | Use GPU if available | False               |
-| `seed` | Random seed | 42                  |
+| Parameter | Description | Default |
+|---|---|---|
+| `d_emb` | Embedding dimension | 128 |
+| `d_hidden_link` | MLP_link hidden dimension | 128 |
+| `max_walk_len` | Maximum walk length | 10 |
+| `num_walks_per_node` | Walks per starting node | 5 |
+| `walk_bias` | Tempest walk bias | "Exponential" |
+| `temporal_decay_exp` | Temporal decay exponent (β) | 0.5 |
+| `eta_uniform` | Uniformity loss coefficient (η) | 1.0 |
+| `uniformity_temperature` | Temperature in exp(-t * sq_dist) | 2.0 |
+| `uniformity_cap` | Max nodes for gram matrix | 20000 |
+| `alpha_link` | Link prediction loss coefficient (α) | 1.0 |
+| `negatives_per_positive_train` | Random negatives per positive (training) | 10 |
+| `negatives_per_positive_eval` | Random negatives per positive (evaluation) | 5 |
+| `train_ratio` | Fraction of edges for training (TGB-identical quantile split) | 0.70 |
+| `val_ratio` | Fraction of edges for validation (TGB-identical quantile split) | 0.15 |
+| `val_negative_file` | Path to TGB-format val negatives pickle (optional) | None |
+| `test_negative_file` | Path to TGB-format test negatives pickle (optional) | None |
+| `emb_lr` | Embedding optimizer learning rate | 1e-3 |
+| `link_lr` | Link prediction optimizer learning rate | 1e-3 |
+| `target_batch_size` | Approximate edges per batch | 50000 |
+| `max_node_count` | Total node count (required) | — |
+| `is_directed` | Graph directionality (required) | — |
+| `dataset_file` | Path to dataset CSV (required) | — |
+| `edge_features_file` | Path to edge features .npy (optional) | None |
+| `node_features_file` | Path to node features .npy (optional) | None |
+| `use_gpu` | Use GPU if available | False |
+| `seed` | Random seed | 42 |
 
 ---
 
 ## 17. Data Format
 
-TGN-style custom datasets:
+Each file is specified independently via config:
 
-- `{dataset}.csv` — columns: `u, i, ts, idx`
-- `{dataset}_edges.npy` — edge features indexed by `idx`, shape `[E, d_edge]`
-- `{dataset}_node.npy` — node features indexed by dense node ID, shape `[N, d_node]`
+- `dataset_file` (required) — CSV with columns: `u, i, ts, idx`
+- `edge_features_file` (optional) — `.npy`, edge features indexed by `idx`, shape `[E, d_edge]`
+- `node_features_file` (optional) — `.npy`, node features indexed by dense node ID, shape `[N, d_node]`
 
-Node feature dimension `d_node` is derived from the loaded array shape at runtime — not a config parameter.
+Files can live anywhere on disk — no naming convention or shared directory is required. Node feature dimension `d_node` is derived from the loaded array shape at runtime — not a config parameter.
 
 ---
 
