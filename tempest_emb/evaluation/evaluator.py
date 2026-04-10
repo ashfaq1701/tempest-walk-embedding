@@ -1,4 +1,4 @@
-from typing import List, Tuple, Union
+from typing import List, Tuple
 
 import numpy as np
 import torch
@@ -14,11 +14,11 @@ class Evaluator:
 
     For each batch (called before ingestion by the Trainer):
       1. Sample negatives via the injected NegativeSampler.
-      2. Flatten all (positive, negatives) groups into one forward pass.
-      3. Split scores by group sizes and compute pessimistic MRR.
-
-    Works identically for fixed-K (all groups size 1+K) and variable-K
-    (groups of size 1+K_i).
+      2. Flatten positives + negatives into one interleaved array with a
+         counts vector: [pos_0, neg_0_1..neg_0_K0, pos_1, neg_1_1..neg_1_K1, ...]
+      3. Single forward pass through EmbeddingStore + LinkPredictor.
+      4. Pessimistic MRR — reshape + vectorised sum for fixed-K,
+         torch.split for variable-K.
     """
 
     def __init__(
@@ -43,29 +43,7 @@ class Evaluator:
         neg_src, neg_tgt = self.neg_sampler.sample(batch)
         B = len(batch.src)
 
-        # Normalise to list-of-arrays so the same code handles both shapes.
-        # Fixed-K: [B, K] ndarray → list of B rows, each length K.
-        # Variable-K: already list-of-ndarrays.
-        neg_src_list = self._to_list(neg_src, B)
-        neg_tgt_list = self._to_list(neg_tgt, B)
-
-        # Build flat src/dst arrays: [pos_0, neg_0_1..neg_0_K0, pos_1, ...]
-        group_sizes: List[int] = []
-        src_parts: List[np.ndarray] = []
-        dst_parts: List[np.ndarray] = []
-
-        for i in range(B):
-            ns = neg_src_list[i]
-            nt = neg_tgt_list[i]
-            K_i = len(nt)
-            group_sizes.append(1 + K_i)
-            src_parts.append(np.array([batch.src[i]], dtype=np.int32))
-            src_parts.append(np.asarray(ns, dtype=np.int32))
-            dst_parts.append(np.array([batch.tgt[i]], dtype=np.int32))
-            dst_parts.append(np.asarray(nt, dtype=np.int32))
-
-        all_u = torch.from_numpy(np.concatenate(src_parts)).long().to(self.device)
-        all_v = torch.from_numpy(np.concatenate(dst_parts)).long().to(self.device)
+        all_u, all_v, counts = self._interleave(batch, neg_src, neg_tgt, B)
 
         # Single forward pass
         e_target_u = self.embedding_store.target(all_u)
@@ -77,24 +55,77 @@ class Evaluator:
             e_target_u, e_target_v, e_context_u, e_context_v
         )
 
-        # Split scores by group and compute pessimistic rank per positive
-        total_rr = 0.0
-        offset = 0
-        for size in group_sizes:
-            group = prob[offset : offset + size]
-            pos_score = group[0]
-            neg_scores = group[1:]
-            rank = (neg_scores >= pos_score).sum() + 1
-            total_rr += (1.0 / rank.float()).item()
-            offset += size
-
+        # Pessimistic MRR
+        total_rr = self._compute_mrr(prob, counts, B)
         return total_rr, B
 
-    @staticmethod
-    def _to_list(
-        arr: Union[np.ndarray, List[np.ndarray]], B: int
-    ) -> List[np.ndarray]:
-        """Normalise [B, K] array or list-of-arrays to list-of-arrays."""
-        if isinstance(arr, np.ndarray) and arr.ndim == 2:
-            return [arr[i] for i in range(B)]
-        return arr
+    def _interleave(
+        self,
+        batch: Batch,
+        neg_src,
+        neg_tgt,
+        B: int,
+    ) -> Tuple[torch.Tensor, torch.Tensor, List[int]]:
+        """Build flat interleaved arrays and a counts vector.
+
+        Layout: [pos_0, neg_0_1..neg_0_K0, pos_1, neg_1_1..neg_1_K1, ...]
+        counts: [K0, K1, ...] — number of negatives per positive.
+
+        Fixed-K ([B, K] arrays): vectorised cat + flatten.
+        Variable-K (list-of-arrays): per-positive concat.
+        """
+        fixed_k = isinstance(neg_src, np.ndarray) and neg_src.ndim == 2
+
+        if fixed_k:
+            K = neg_src.shape[1]
+            pos_src = torch.from_numpy(batch.src).long().to(self.device)
+            pos_tgt = torch.from_numpy(batch.tgt).long().to(self.device)
+            neg_src_t = torch.from_numpy(neg_src).long().to(self.device)
+            neg_tgt_t = torch.from_numpy(neg_tgt).long().to(self.device)
+            all_u = torch.cat([pos_src.unsqueeze(1), neg_src_t], dim=1).flatten()
+            all_v = torch.cat([pos_tgt.unsqueeze(1), neg_tgt_t], dim=1).flatten()
+            counts = [K] * B
+        else:
+            src_parts: List[np.ndarray] = []
+            dst_parts: List[np.ndarray] = []
+            counts = []
+            for i in range(B):
+                K_i = len(neg_tgt[i])
+                counts.append(K_i)
+                src_parts.append(np.array([batch.src[i]], dtype=np.int32))
+                src_parts.append(np.asarray(neg_src[i], dtype=np.int32))
+                dst_parts.append(np.array([batch.tgt[i]], dtype=np.int32))
+                dst_parts.append(np.asarray(neg_tgt[i], dtype=np.int32))
+            all_u = torch.from_numpy(np.concatenate(src_parts)).long().to(self.device)
+            all_v = torch.from_numpy(np.concatenate(dst_parts)).long().to(self.device)
+
+        return all_u, all_v, counts
+
+    def _compute_mrr(
+        self,
+        prob: torch.Tensor,
+        counts: List[int],
+        B: int,
+    ) -> float:
+        """Pessimistic MRR from flat scores + counts vector.
+
+        Fixed-K (all counts equal): reshape to [B, 1+K], vectorised sum.
+        Variable-K: torch.split by group sizes, per-group ranking.
+        """
+        K0 = counts[0]
+        fixed_k = all(c == K0 for c in counts)
+
+        if fixed_k:
+            scores = prob.view(B, 1 + K0)
+            pos_scores = scores[:, :1]      # [B, 1]
+            neg_scores = scores[:, 1:]      # [B, K]
+            rank = (neg_scores >= pos_scores).sum(dim=1) + 1  # [B]
+            return (1.0 / rank.float()).sum().item()
+
+        group_sizes = [1 + c for c in counts]
+        groups = torch.split(prob, group_sizes)
+        total_rr = 0.0
+        for group in groups:
+            rank = (group[1:] >= group[0]).sum() + 1
+            total_rr += (1.0 / rank.float()).item()
+        return total_rr
