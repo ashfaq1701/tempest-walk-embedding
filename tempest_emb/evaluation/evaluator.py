@@ -1,12 +1,9 @@
-from typing import Tuple
+from typing import List, Tuple, Union
 
 import numpy as np
 import torch
 
-from tempest_emb.data.negative_sampler import (
-    FileNegativeSampler,
-    NegativeSampler,
-)
+from tempest_emb.data.negative_sampler import NegativeSampler
 from tempest_emb.models.embedding_store import EmbeddingStore
 from tempest_emb.models.link_predictor import LinkPredictor
 from tempest_emb.types import Batch
@@ -17,11 +14,11 @@ class Evaluator:
 
     For each batch (called before ingestion by the Trainer):
       1. Sample negatives via the injected NegativeSampler.
-      2. Score positives against their negatives.
-      3. Compute pessimistic MRR (ties counted against the positive).
+      2. Flatten all (positive, negatives) groups into one forward pass.
+      3. Split scores by group sizes and compute pessimistic MRR.
 
-    Supports both fixed-K negatives (UniformNegativeSampler, [B, K] arrays)
-    and variable-K negatives (FileNegativeSampler, list-of-ndarrays).
+    Works identically for fixed-K (all groups size 1+K) and variable-K
+    (groups of size 1+K_i).
     """
 
     def __init__(
@@ -44,30 +41,33 @@ class Evaluator:
             (sum_of_reciprocal_ranks, num_positive_edges)
         """
         neg_src, neg_tgt = self.neg_sampler.sample(batch)
+        B = len(batch.src)
 
-        if isinstance(self.neg_sampler, FileNegativeSampler):
-            return self._evaluate_variable_k(batch, neg_src, neg_tgt)
-        else:
-            return self._evaluate_fixed_k(batch, neg_src, neg_tgt)
+        # Normalise to list-of-arrays so the same code handles both shapes.
+        # Fixed-K: [B, K] ndarray → list of B rows, each length K.
+        # Variable-K: already list-of-ndarrays.
+        neg_src_list = self._to_list(neg_src, B)
+        neg_tgt_list = self._to_list(neg_tgt, B)
 
-    def _evaluate_fixed_k(
-        self,
-        batch: Batch,
-        neg_src: np.ndarray,
-        neg_tgt: np.ndarray,
-    ) -> Tuple[float, int]:
-        """Vectorised evaluation when all positives have the same K negatives."""
-        pos_src = torch.from_numpy(batch.src).long().to(self.device)  # [B]
-        pos_tgt = torch.from_numpy(batch.tgt).long().to(self.device)  # [B]
-        neg_src_t = torch.from_numpy(neg_src).long().to(self.device)  # [B, K]
-        neg_tgt_t = torch.from_numpy(neg_tgt).long().to(self.device)  # [B, K]
+        # Build flat src/dst arrays: [pos_0, neg_0_1..neg_0_K0, pos_1, ...]
+        group_sizes: List[int] = []
+        src_parts: List[np.ndarray] = []
+        dst_parts: List[np.ndarray] = []
 
-        B, K = neg_src_t.shape
+        for i in range(B):
+            ns = neg_src_list[i]
+            nt = neg_tgt_list[i]
+            K_i = len(nt)
+            group_sizes.append(1 + K_i)
+            src_parts.append(np.array([batch.src[i]], dtype=np.int32))
+            src_parts.append(np.asarray(ns, dtype=np.int32))
+            dst_parts.append(np.array([batch.tgt[i]], dtype=np.int32))
+            dst_parts.append(np.asarray(nt, dtype=np.int32))
 
-        # Interleave: [B, 1+K] then flatten
-        all_u = torch.cat([pos_src.unsqueeze(1), neg_src_t], dim=1).flatten()
-        all_v = torch.cat([pos_tgt.unsqueeze(1), neg_tgt_t], dim=1).flatten()
+        all_u = torch.from_numpy(np.concatenate(src_parts)).long().to(self.device)
+        all_v = torch.from_numpy(np.concatenate(dst_parts)).long().to(self.device)
 
+        # Single forward pass
         e_target_u = self.embedding_store.target(all_u)
         e_target_v = self.embedding_store.target(all_v)
         e_context_u = self.embedding_store.context(all_u)
@@ -75,58 +75,26 @@ class Evaluator:
 
         prob = self.link_predictor(
             e_target_u, e_target_v, e_context_u, e_context_v
-        )  # [B * (1 + K)]
+        )
 
-        scores = prob.view(B, 1 + K)
-        pos_scores = scores[:, :1]          # [B, 1]
-        neg_scores = scores[:, 1:]          # [B, K]
-
-        # Pessimistic rank: ties counted against the positive.
-        rank = (neg_scores >= pos_scores).sum(dim=1) + 1  # [B]
-        reciprocal = 1.0 / rank.float()
-
-        return reciprocal.sum().item(), B
-
-    def _evaluate_variable_k(
-        self,
-        batch: Batch,
-        neg_src_list,
-        neg_tgt_list,
-    ) -> Tuple[float, int]:
-        """Per-positive evaluation when K varies (TGB pickle negatives)."""
+        # Split scores by group and compute pessimistic rank per positive
         total_rr = 0.0
-        B = len(batch.src)
-
-        for i in range(B):
-            pos_s = int(batch.src[i])
-            pos_d = int(batch.tgt[i])
-            neg_dsts = neg_tgt_list[i]
-            K_i = len(neg_dsts)
-
-            # Build [1 + K_i] source and destination arrays
-            src_arr = np.concatenate(
-                [np.array([pos_s], dtype=np.int32), neg_src_list[i]]
-            )
-            dst_arr = np.concatenate(
-                [np.array([pos_d], dtype=np.int32), neg_dsts]
-            )
-
-            all_u = torch.from_numpy(src_arr).long().to(self.device)
-            all_v = torch.from_numpy(dst_arr).long().to(self.device)
-
-            e_target_u = self.embedding_store.target(all_u)
-            e_target_v = self.embedding_store.target(all_v)
-            e_context_u = self.embedding_store.context(all_u)
-            e_context_v = self.embedding_store.context(all_v)
-
-            prob = self.link_predictor(
-                e_target_u, e_target_v, e_context_u, e_context_v
-            )  # [1 + K_i]
-
-            pos_score = prob[0]
-            neg_scores = prob[1:]
-
+        offset = 0
+        for size in group_sizes:
+            group = prob[offset : offset + size]
+            pos_score = group[0]
+            neg_scores = group[1:]
             rank = (neg_scores >= pos_score).sum() + 1
             total_rr += (1.0 / rank.float()).item()
+            offset += size
 
         return total_rr, B
+
+    @staticmethod
+    def _to_list(
+        arr: Union[np.ndarray, List[np.ndarray]], B: int
+    ) -> List[np.ndarray]:
+        """Normalise [B, K] array or list-of-arrays to list-of-arrays."""
+        if isinstance(arr, np.ndarray) and arr.ndim == 2:
+            return [arr[i] for i in range(B)]
+        return arr
