@@ -14,11 +14,12 @@ class Evaluator:
 
     For each batch (called before ingestion by the Trainer):
       1. Sample negatives via the injected NegativeSampler.
-      2. Flatten all (positive, negatives) groups into one forward pass.
-      3. Split scores by group sizes and compute pessimistic MRR.
+      2. Flatten all (positive, negatives) into a single forward pass.
+      3. Compute pessimistic MRR.
 
-    Works identically for fixed-K (all groups size 1+K) and variable-K
-    (groups of size 1+K_i).
+    Fixed-K path (uniform negatives): fully vectorised construction and
+    ranking via [B, 1+K] reshape.  Variable-K path (TGB pickle): builds
+    flat arrays in a loop, single forward pass, then per-group ranking.
     """
 
     def __init__(
@@ -42,32 +43,16 @@ class Evaluator:
         """
         neg_src, neg_tgt = self.neg_sampler.sample(batch)
         B = len(batch.src)
+        fixed_k = isinstance(neg_src, np.ndarray) and neg_src.ndim == 2
 
-        # Normalise to list-of-arrays so the same code handles both shapes.
-        # Fixed-K: [B, K] ndarray → list of B rows, each length K.
-        # Variable-K: already list-of-ndarrays.
-        neg_src_list = self._to_list(neg_src, B)
-        neg_tgt_list = self._to_list(neg_tgt, B)
+        # --- build flat src/dst tensors + forward pass ---
+        if fixed_k:
+            all_u, all_v, K = self._build_fixed_k(batch, neg_src, neg_tgt)
+        else:
+            all_u, all_v, group_sizes = self._build_variable_k(
+                batch, neg_src, neg_tgt, B
+            )
 
-        # Build flat src/dst arrays: [pos_0, neg_0_1..neg_0_K0, pos_1, ...]
-        group_sizes: List[int] = []
-        src_parts: List[np.ndarray] = []
-        dst_parts: List[np.ndarray] = []
-
-        for i in range(B):
-            ns = neg_src_list[i]
-            nt = neg_tgt_list[i]
-            K_i = len(nt)
-            group_sizes.append(1 + K_i)
-            src_parts.append(np.array([batch.src[i]], dtype=np.int32))
-            src_parts.append(np.asarray(ns, dtype=np.int32))
-            dst_parts.append(np.array([batch.tgt[i]], dtype=np.int32))
-            dst_parts.append(np.asarray(nt, dtype=np.int32))
-
-        all_u = torch.from_numpy(np.concatenate(src_parts)).long().to(self.device)
-        all_v = torch.from_numpy(np.concatenate(dst_parts)).long().to(self.device)
-
-        # Single forward pass
         e_target_u = self.embedding_store.target(all_u)
         e_target_v = self.embedding_store.target(all_v)
         e_context_u = self.embedding_store.context(all_u)
@@ -77,24 +62,62 @@ class Evaluator:
             e_target_u, e_target_v, e_context_u, e_context_v
         )
 
-        # Split scores by group and compute pessimistic rank per positive
-        total_rr = 0.0
-        offset = 0
-        for size in group_sizes:
-            group = prob[offset : offset + size]
-            pos_score = group[0]
-            neg_scores = group[1:]
-            rank = (neg_scores >= pos_score).sum() + 1
-            total_rr += (1.0 / rank.float()).item()
-            offset += size
+        # --- compute pessimistic MRR ---
+        if fixed_k:
+            scores = prob.view(B, 1 + K)
+            pos_scores = scores[:, :1]      # [B, 1]
+            neg_scores = scores[:, 1:]      # [B, K]
+            rank = (neg_scores >= pos_scores).sum(dim=1) + 1  # [B]
+            total_rr = (1.0 / rank.float()).sum().item()
+        else:
+            total_rr = 0.0
+            offset = 0
+            for size in group_sizes:
+                group = prob[offset : offset + size]
+                rank = (group[1:] >= group[0]).sum() + 1
+                total_rr += (1.0 / rank.float()).item()
+                offset += size
 
         return total_rr, B
 
-    @staticmethod
-    def _to_list(
-        arr: Union[np.ndarray, List[np.ndarray]], B: int
-    ) -> List[np.ndarray]:
-        """Normalise [B, K] array or list-of-arrays to list-of-arrays."""
-        if isinstance(arr, np.ndarray) and arr.ndim == 2:
-            return [arr[i] for i in range(B)]
-        return arr
+    # ------------------------------------------------------------------ #
+    # Construction helpers
+    # ------------------------------------------------------------------ #
+
+    def _build_fixed_k(
+        self,
+        batch: Batch,
+        neg_src: np.ndarray,
+        neg_tgt: np.ndarray,
+    ) -> Tuple[torch.Tensor, torch.Tensor, int]:
+        """Vectorised [B, 1+K] interleave → flat tensors. Returns (all_u, all_v, K)."""
+        pos_src = torch.from_numpy(batch.src).long().to(self.device)
+        pos_tgt = torch.from_numpy(batch.tgt).long().to(self.device)
+        neg_src_t = torch.from_numpy(neg_src).long().to(self.device)
+        neg_tgt_t = torch.from_numpy(neg_tgt).long().to(self.device)
+        K = neg_src_t.shape[1]
+        all_u = torch.cat([pos_src.unsqueeze(1), neg_src_t], dim=1).flatten()
+        all_v = torch.cat([pos_tgt.unsqueeze(1), neg_tgt_t], dim=1).flatten()
+        return all_u, all_v, K
+
+    def _build_variable_k(
+        self,
+        batch: Batch,
+        neg_src_list: List[np.ndarray],
+        neg_tgt_list: List[np.ndarray],
+        B: int,
+    ) -> Tuple[torch.Tensor, torch.Tensor, List[int]]:
+        """Per-positive concat → flat tensors. Returns (all_u, all_v, group_sizes)."""
+        group_sizes: List[int] = []
+        src_parts: List[np.ndarray] = []
+        dst_parts: List[np.ndarray] = []
+        for i in range(B):
+            K_i = len(neg_tgt_list[i])
+            group_sizes.append(1 + K_i)
+            src_parts.append(np.array([batch.src[i]], dtype=np.int32))
+            src_parts.append(np.asarray(neg_src_list[i], dtype=np.int32))
+            dst_parts.append(np.array([batch.tgt[i]], dtype=np.int32))
+            dst_parts.append(np.asarray(neg_tgt_list[i], dtype=np.int32))
+        all_u = torch.from_numpy(np.concatenate(src_parts)).long().to(self.device)
+        all_v = torch.from_numpy(np.concatenate(dst_parts)).long().to(self.device)
+        return all_u, all_v, group_sizes
