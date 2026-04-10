@@ -94,15 +94,3 @@ class FileNegativeSampler(NegativeSampler):
             neg_src_list.append(np.full(len(neg_dsts), s, dtype=np.int32))
             neg_tgt_list.append(neg_dsts.astype(np.int32))
         return neg_src_list, neg_tgt_list
-
-
-# Backward-compatible convenience function (used by training loop)
-def sample_negatives(
-    batch: Batch, num_nodes: int, num_neg_per_pos: int
-) -> Tuple[np.ndarray, np.ndarray]:
-    """Sample random negative edges for a batch of positive edges.
-
-    Thin wrapper kept for backward compatibility with the training loop.
-    """
-    sampler = UniformNegativeSampler(num_nodes, num_neg_per_pos)
-    return sampler.sample(batch)
