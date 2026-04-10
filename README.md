@@ -45,7 +45,6 @@ scripts/
   train.py               # CLI entry point
 notebooks/
   analysis.ipynb         # Exploration / analysis
-data/                    # Place datasets here
 checkpoints/             # Model checkpoints
 design_document.md       # Full design specification
 ```
