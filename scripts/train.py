@@ -7,6 +7,10 @@ import torch
 
 from tempest_emb.config import Config
 from tempest_emb.data.dataset import create_batches, load_dataset
+from tempest_emb.data.negative_sampler import (
+    FileNegativeSampler,
+    UniformNegativeSampler,
+)
 from tempest_emb.evaluation.evaluator import Evaluator
 from tempest_emb.training.trainer import Trainer
 
@@ -38,6 +42,18 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--checkpoint", type=str, default=None,
                    help="Path to save checkpoint at end of run")
 
+    # Split ratios
+    p.add_argument("--train-ratio", type=float, default=0.70,
+                   help="Fraction of edges for training (default 0.70, TGB-identical)")
+    p.add_argument("--val-ratio", type=float, default=0.15,
+                   help="Fraction of edges for validation (default 0.15, TGB-identical)")
+
+    # Pre-generated negative files (TGB pickle format)
+    p.add_argument("--val-negative-file", type=str, default=None,
+                   help="Path to TGB-format val negatives pickle")
+    p.add_argument("--test-negative-file", type=str, default=None,
+                   help="Path to TGB-format test negatives pickle")
+
     return p.parse_args()
 
 
@@ -55,6 +71,10 @@ def build_config(args: argparse.Namespace) -> Config:
         negatives_per_positive_train=args.negatives_per_positive_train,
         negatives_per_positive_eval=args.negatives_per_positive_eval,
         seed=args.seed,
+        train_ratio=args.train_ratio,
+        val_ratio=args.val_ratio,
+        val_negative_file=args.val_negative_file,
+        test_negative_file=args.test_negative_file,
     )
 
 
@@ -74,11 +94,33 @@ def main() -> None:
         print("No node features")
 
     trainer = Trainer(config=config, node_feat=node_feat)
-    evaluator = Evaluator(
+
+    # Build phase-specific negative samplers
+    uniform_sampler = UniformNegativeSampler(
+        num_nodes=config.max_node_count,
+        num_neg_per_pos=config.negatives_per_positive_eval,
+    )
+    val_neg_sampler = (
+        FileNegativeSampler(config.val_negative_file)
+        if config.val_negative_file
+        else uniform_sampler
+    )
+    test_neg_sampler = (
+        FileNegativeSampler(config.test_negative_file)
+        if config.test_negative_file
+        else uniform_sampler
+    )
+
+    evaluator_val = Evaluator(
         embedding_store=trainer.embedding_store,
         link_predictor=trainer.link_predictor,
-        num_nodes=config.max_node_count,
-        negatives_per_positive=config.negatives_per_positive_eval,
+        neg_sampler=val_neg_sampler,
+        device=trainer.device,
+    )
+    evaluator_test = Evaluator(
+        embedding_store=trainer.embedding_store,
+        link_predictor=trainer.link_predictor,
+        neg_sampler=test_neg_sampler,
         device=trainer.device,
     )
 
@@ -92,13 +134,13 @@ def main() -> None:
     # Validation phase (streaming eval)
     print("=== Validation ===")
     val_batches = create_batches(val_data, config.target_batch_size)
-    val_mrr = trainer.val_or_test(val_batches, evaluator=evaluator, phase="val")
+    val_mrr = trainer.val_or_test(val_batches, evaluator=evaluator_val, phase="val")
     print(f"Val MRR: {val_mrr:.4f}")
 
     # Test phase (streaming eval)
     print("=== Test ===")
     test_batches = create_batches(test_data, config.target_batch_size)
-    test_mrr = trainer.val_or_test(test_batches, evaluator=evaluator, phase="test")
+    test_mrr = trainer.val_or_test(test_batches, evaluator=evaluator_test, phase="test")
     print(f"Test MRR: {test_mrr:.4f}")
 
     if args.checkpoint is not None:

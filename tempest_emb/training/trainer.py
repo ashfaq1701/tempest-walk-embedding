@@ -4,7 +4,7 @@ import numpy as np
 import torch
 
 from tempest_emb.config import Config
-from tempest_emb.data.negative_sampler import sample_negatives
+from tempest_emb.data.negative_sampler import UniformNegativeSampler
 from tempest_emb.models.embedding_store import EmbeddingStore
 from tempest_emb.models.link_predictor import LinkPredictor
 from tempest_emb.training.embedding_trainer import EmbeddingTrainer
@@ -73,6 +73,11 @@ class Trainer:
             device=self.device,
         )
 
+        self.neg_sampler_train = UniformNegativeSampler(
+            num_nodes=config.max_node_count,
+            num_neg_per_pos=config.negatives_per_positive_train,
+        )
+
         self.logger = logger or Logger(use_wandb=False)
         self.batch_idx = 0
 
@@ -98,11 +103,7 @@ class Trainer:
                 walks, batch.t_max
             )
 
-            neg_src, neg_tgt = sample_negatives(
-                batch,
-                self.config.max_node_count,
-                self.config.negatives_per_positive_train,
-            )
+            neg_src, neg_tgt = self.neg_sampler_train.sample(batch)
             l_link = self.link_pred_trainer.step(batch, neg_src, neg_tgt)
 
             self.batch_idx += 1
