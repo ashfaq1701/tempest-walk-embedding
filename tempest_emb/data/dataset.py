@@ -13,21 +13,17 @@ def load_dataset(
 ) -> Tuple[SplitData, SplitData, SplitData, Optional[np.ndarray]]:
     """Load dataset and return chronological train/val/test splits + node features.
 
-    Expects files in config.data_dir:
-        {dataset}.csv          — columns: u, i, ts, idx
-        {dataset}_edges.npy    — edge features indexed by idx
-        {dataset}_node.npy     — node features indexed by dense node ID
+    Uses file paths from config:
+        config.dataset_file        — CSV with columns: u, i, ts, idx
+        config.edge_features_file  — (optional) edge features .npy indexed by idx
+        config.node_features_file  — (optional) node features .npy indexed by dense node ID
 
     Returns:
         (train_data, val_data, test_data, node_feat)
         node_feat is [N, d_node] float32 or None.
     """
-    data_dir = Path(config.data_dir)
-    name = config.dataset
-
     # Load CSV
-    csv_path = data_dir / f"{name}.csv"
-    df = pd.read_csv(csv_path)
+    df = pd.read_csv(config.dataset_file)
     sources = df["u"].values.astype(np.int64)
     destinations = df["i"].values.astype(np.int64)
     timestamps = df["ts"].values.astype(np.int64)
@@ -36,17 +32,16 @@ def load_dataset(
     assert np.all(np.diff(timestamps) >= 0), "CSV must be sorted by timestamp"
 
     # Load edge features
-    edge_feat_path = data_dir / f"{name}_edges.npy"
-    if edge_feat_path.exists():
+    if config.edge_features_file is not None:
+        edge_feat_path = Path(config.edge_features_file)
         all_edge_feat = np.load(edge_feat_path).astype(np.float32)
         edge_feat = all_edge_feat[idx]
     else:
         edge_feat = None
 
     # Load node features
-    node_feat_path = data_dir / f"{name}_node.npy"
-    if node_feat_path.exists():
-        node_feat = np.load(node_feat_path).astype(np.float32)
+    if config.node_features_file is not None:
+        node_feat = np.load(config.node_features_file).astype(np.float32)
     else:
         node_feat = None
 

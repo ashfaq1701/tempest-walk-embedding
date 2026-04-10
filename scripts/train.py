@@ -19,8 +19,8 @@ def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description="Train Tempest walk-first embeddings")
 
     # Required dataset args
-    p.add_argument("--dataset", type=str, required=True,
-                   help="Dataset name (e.g. ml_collegemessage)")
+    p.add_argument("--dataset-file", type=str, required=True,
+                   help="Path to dataset CSV (columns: u, i, ts, idx)")
     p.add_argument("--max-node-count", type=int, required=True,
                    help="Node IDs are expected to be in [0, max_node_count)")
 
@@ -29,8 +29,13 @@ def parse_args() -> argparse.Namespace:
     direction.add_argument("--directed", dest="is_directed", action="store_true")
     direction.add_argument("--undirected", dest="is_directed", action="store_false")
 
+    # Optional dataset files
+    p.add_argument("--edge-features-file", type=str, default=None,
+                   help="Path to edge features .npy (indexed by idx column)")
+    p.add_argument("--node-features-file", type=str, default=None,
+                   help="Path to node features .npy (indexed by dense node ID)")
+
     # Optional
-    p.add_argument("--data-dir", type=str, default="data/")
     p.add_argument("--use-gpu", action="store_true")
     p.add_argument("--d-emb", type=int, default=128)
     p.add_argument("--target-batch-size", type=int, default=50000)
@@ -59,8 +64,9 @@ def parse_args() -> argparse.Namespace:
 
 def build_config(args: argparse.Namespace) -> Config:
     return Config(
-        dataset=args.dataset,
-        data_dir=args.data_dir,
+        dataset_file=args.dataset_file,
+        edge_features_file=args.edge_features_file,
+        node_features_file=args.node_features_file,
         max_node_count=args.max_node_count,
         is_directed=args.is_directed,
         use_gpu=args.use_gpu,
@@ -85,7 +91,7 @@ def main() -> None:
     np.random.seed(config.seed)
     torch.manual_seed(config.seed)
 
-    print(f"Loading dataset: {config.dataset}")
+    print(f"Loading dataset: {config.dataset_file}")
     train_data, val_data, test_data, node_feat = load_dataset(config)
 
     if node_feat is not None:

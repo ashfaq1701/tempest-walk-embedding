@@ -373,8 +373,9 @@ All initialized with Xavier-uniform.
 | `target_batch_size` | Approximate edges per batch | 50000 |
 | `max_node_count` | Total node count (required) | — |
 | `is_directed` | Graph directionality (required) | — |
-| `dataset` | Dataset name (required) | — |
-| `data_dir` | Dataset directory | "data/" |
+| `dataset_file` | Path to dataset CSV (required) | — |
+| `edge_features_file` | Path to edge features .npy (optional) | None |
+| `node_features_file` | Path to node features .npy (optional) | None |
 | `use_gpu` | Use GPU if available | False |
 | `seed` | Random seed | 42 |
 
@@ -382,13 +383,13 @@ All initialized with Xavier-uniform.
 
 ## 17. Data Format
 
-TGN-style custom datasets:
+Each file is specified independently via config:
 
-- `{dataset}.csv` — columns: `u, i, ts, idx`
-- `{dataset}_edges.npy` — edge features indexed by `idx`, shape `[E, d_edge]`
-- `{dataset}_node.npy` — node features indexed by dense node ID, shape `[N, d_node]`
+- `dataset_file` (required) — CSV with columns: `u, i, ts, idx`
+- `edge_features_file` (optional) — `.npy`, edge features indexed by `idx`, shape `[E, d_edge]`
+- `node_features_file` (optional) — `.npy`, node features indexed by dense node ID, shape `[N, d_node]`
 
-Node feature dimension `d_node` is derived from the loaded array shape at runtime — not a config parameter.
+Files can live anywhere on disk — no naming convention or shared directory is required. Node feature dimension `d_node` is derived from the loaded array shape at runtime — not a config parameter.
 
 ---
 
