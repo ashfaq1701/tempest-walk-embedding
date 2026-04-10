@@ -52,11 +52,13 @@ design_document.md       # Full design specification
 
 ## Data Format
 
-Datasets follow the TGN-style layout under `data/` (or whatever `--data-dir` points to):
+Each file is specified independently via CLI flags:
 
-- `{dataset}.csv` — columns `u, i, ts, idx`
-- `{dataset}_edges.npy` — edge features indexed by `idx`, shape `[E, d_edge]`
-- `{dataset}_node.npy` — optional node features indexed by dense node ID, shape `[N, d_node]`
+- **Dataset CSV** (`--dataset-file`, required) — columns `u, i, ts, idx`
+- **Edge features** (`--edge-features-file`, optional) — `.npy`, shape `[E, d_edge]`, indexed by `idx`
+- **Node features** (`--node-features-file`, optional) — `.npy`, shape `[N, d_node]`, indexed by dense node ID
+
+Files can live anywhere on disk — no naming convention or shared directory is required.
 
 Node IDs must be dense integers in `[0, max_node_count)`. The data is split chronologically using `np.quantile` on per-edge timestamps (configurable via `--train-ratio` / `--val-ratio`, defaults 0.70 / 0.15). This split is byte-for-byte identical to both TGB and Neural Temporal Walks for matching ratios.
 
@@ -66,10 +68,11 @@ Run training via the CLI:
 
 ```bash
 python scripts/train.py \
-    --dataset ml_collegemessage \
+    --dataset-file data/ml_collegemessage.csv \
+    --edge-features-file data/ml_collegemessage_edges.npy \
+    --node-features-file data/ml_collegemessage_node.npy \
     --max-node-count 1899 \
     --directed \
-    --data-dir data/ \
     --use-gpu \
     --checkpoint checkpoints/collegemessage.pt
 ```
@@ -78,7 +81,7 @@ Required flags:
 
 | Flag | Description |
 |---|---|
-| `--dataset` | Dataset name (matches the file prefix in `--data-dir`) |
+| `--dataset-file` | Path to dataset CSV (columns: `u, i, ts, idx`) |
 | `--max-node-count` | Total node count; node IDs must be in `[0, max_node_count)` |
 | `--directed` / `--undirected` | Graph directionality (mutually exclusive) |
 
@@ -86,7 +89,8 @@ Common optional flags:
 
 | Flag | Default | Description |
 |---|---|---|
-| `--data-dir` | `data/` | Directory containing the dataset files |
+| `--edge-features-file` | none | Path to edge features `.npy` (indexed by `idx` column) |
+| `--node-features-file` | none | Path to node features `.npy` (indexed by dense node ID) |
 | `--use-gpu` | off | Enable CUDA if available |
 | `--d-emb` | 128 | Embedding dimension |
 | `--target-batch-size` | 50000 | Approximate edges per batch (timestamp-respecting) |
@@ -119,7 +123,7 @@ By default, evaluation uses `negatives_per_positive_eval` uniformly random negat
 
 ```bash
 python scripts/train.py \
-    --dataset tgbl-wiki \
+    --dataset-file data/tgbl-wiki.csv \
     --max-node-count 9228 \
     --undirected \
     --val-negative-file data/tgbl-wiki_val_ns.pkl \
