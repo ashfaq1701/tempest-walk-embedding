@@ -1,4 +1,6 @@
-from pydantic import BaseModel
+from typing import Optional
+
+from pydantic import BaseModel, field_validator
 
 
 class Config(BaseModel):
@@ -37,6 +39,28 @@ class Config(BaseModel):
     is_directed: bool  # required — dataset-specific
     max_node_count: int  # required — node IDs are expected to be [0, max_node_count)
 
+    # Split ratios (TGB-identical np.quantile split)
+    train_ratio: float = 0.70
+    val_ratio: float = 0.15
+
+    # Pre-generated negative files (TGB pickle format)
+    val_negative_file: Optional[str] = None
+    test_negative_file: Optional[str] = None
+
     # System
     use_gpu: bool = False
     seed: int = 42
+
+    @field_validator("val_ratio")
+    @classmethod
+    def _check_split_ratios(cls, v, info):
+        train = info.data.get("train_ratio", 0.70)
+        if train <= 0:
+            raise ValueError(f"train_ratio must be > 0, got {train}")
+        if v <= 0:
+            raise ValueError(f"val_ratio must be > 0, got {v}")
+        if train + v >= 1.0:
+            raise ValueError(
+                f"train_ratio + val_ratio must be < 1.0, got {train} + {v} = {train + v}"
+            )
+        return v

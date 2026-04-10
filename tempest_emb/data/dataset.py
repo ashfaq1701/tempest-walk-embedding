@@ -50,8 +50,10 @@ def load_dataset(
     else:
         node_feat = None
 
-    # Chronological split
-    train_mask, val_mask, test_mask = chronological_split(timestamps)
+    # Chronological split (TGB-identical np.quantile)
+    train_mask, val_mask, test_mask = chronological_split(
+        timestamps, train_ratio=config.train_ratio, val_ratio=config.val_ratio
+    )
 
     def _apply_mask(mask: np.ndarray) -> SplitData:
         ef = edge_feat[mask] if edge_feat is not None else None
@@ -67,27 +69,27 @@ def load_dataset(
 
 def chronological_split(
     timestamps: np.ndarray,
-    train_ratio: float = 0.7,
+    train_ratio: float = 0.70,
     val_ratio: float = 0.15,
 ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
-    """Edge-count-guided, timestamp-respecting chronological split.
+    """TGB-identical temporal quantile split.
+
+    Uses np.quantile on the per-edge timestamp array, producing split
+    boundaries that are byte-for-byte identical to both TGB
+    (tgb/linkproppred/dataset.py:400-428) and Neural Temporal Walks
+    (main.py:33,39-41) for matching ratios.
 
     Returns:
         (train_mask, val_mask, test_mask) — boolean arrays.
     """
-    unique_ts, counts = np.unique(timestamps, return_counts=True)
-    cumulative = np.cumsum(counts)
-    total = cumulative[-1]
+    test_ratio = 1.0 - train_ratio - val_ratio
+    val_time, test_time = np.quantile(
+        timestamps, [1.0 - val_ratio - test_ratio, 1.0 - test_ratio]
+    )
 
-    train_idx = np.searchsorted(cumulative, total * train_ratio)
-    val_idx = np.searchsorted(cumulative, total * (train_ratio + val_ratio))
-
-    train_end_ts = unique_ts[train_idx]
-    val_end_ts = unique_ts[val_idx]
-
-    train_mask = timestamps <= train_end_ts
-    val_mask = (timestamps > train_end_ts) & (timestamps <= val_end_ts)
-    test_mask = timestamps > val_end_ts
+    train_mask = timestamps <= val_time
+    val_mask = (timestamps <= test_time) & (timestamps > val_time)
+    test_mask = timestamps > test_time
 
     n = len(timestamps)
     print(

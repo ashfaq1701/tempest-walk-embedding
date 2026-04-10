@@ -264,12 +264,17 @@ No edge features, no walk information, no node features.
 
 ## 13. Negative Sampling (Link Prediction Only)
 
-Negatives are sampled via a stateless function `sample_negatives(batch, num_nodes, num_neg_per_pos)`. For each positive edge, the source is kept and the target is replaced with a uniformly random node from `[0, num_nodes)`. No history tracking or exclusion — collision with actual positives is negligible for any reasonably sized graph.
+Negatives are sampled via polymorphic `NegativeSampler` classes with a shared `sample(batch) → (neg_src, neg_tgt)` interface:
 
-| Context | `num_neg_per_pos` |
-|---|---|
-| Link prediction training | `negatives_per_positive_train` (default 10) |
-| Evaluation (val + test) | `negatives_per_positive_eval` (default 5) |
+- **`UniformNegativeSampler`** — for each positive edge, keeps the source and replaces the target with a uniformly random node from `[0, num_nodes)`. Returns `[B, K]` arrays. No history tracking or exclusion — collision with actual positives is negligible for any reasonably sized graph. Used for training and as the default for evaluation.
+
+- **`FileNegativeSampler`** — loads a TGB-format pickle `{(src, dst, ts): np.array[neg_dsts]}`. Returns list-of-ndarrays (variable K per positive). Used for evaluation when `val_negative_file` or `test_negative_file` is set.
+
+| Context | Sampler | K |
+|---|---|---|
+| Training | `UniformNegativeSampler` | `negatives_per_positive_train` (default 10) |
+| Evaluation (default) | `UniformNegativeSampler` | `negatives_per_positive_eval` (default 5) |
+| Evaluation (TGB pickle) | `FileNegativeSampler` | Variable, from pickle |
 
 No negatives are used for embedding training.
 
@@ -359,6 +364,10 @@ All initialized with Xavier-uniform.
 | `alpha_link` | Link prediction loss coefficient (α) | 1.0 |
 | `negatives_per_positive_train` | Random negatives per positive (training) | 10 |
 | `negatives_per_positive_eval` | Random negatives per positive (evaluation) | 5 |
+| `train_ratio` | Fraction of edges for training (TGB-identical quantile split) | 0.70 |
+| `val_ratio` | Fraction of edges for validation (TGB-identical quantile split) | 0.15 |
+| `val_negative_file` | Path to TGB-format val negatives pickle (optional) | None |
+| `test_negative_file` | Path to TGB-format test negatives pickle (optional) | None |
 | `emb_lr` | Embedding optimizer learning rate | 1e-3 |
 | `link_lr` | Link prediction optimizer learning rate | 1e-3 |
 | `target_batch_size` | Approximate edges per batch | 50000 |
@@ -391,32 +400,41 @@ Timestamp-respecting accumulation. All edges sharing a timestamp must appear in 
 
 ## 19. Train/Val/Test Split
 
-Chronological split, edge-count-guided, timestamp-respecting. Walk through unique timestamps accumulating edge counts, place split boundaries at 70%/85% of total edge count. All edges sharing a timestamp land in the same split.
+TGB-identical temporal quantile split. Uses `np.quantile` on the per-edge timestamp array to find split boundaries. This produces masks that are byte-for-byte identical to both TGB (`tgb/linkproppred/dataset.py:400-428`) and Neural Temporal Walks (`main.py:33,39-41`) for matching ratios. Split ratios are configurable via `train_ratio` (default 0.70) and `val_ratio` (default 0.15); test gets the remainder.
 
 ```python
-def chronological_split(timestamps, train_ratio=0.7, val_ratio=0.15):
-    unique_ts, counts = np.unique(timestamps, return_counts=True)
-    cumulative = np.cumsum(counts)
-    total = cumulative[-1]
+def chronological_split(timestamps, train_ratio=0.70, val_ratio=0.15):
+    test_ratio = 1.0 - train_ratio - val_ratio
+    val_time, test_time = np.quantile(
+        timestamps, [1.0 - val_ratio - test_ratio, 1.0 - test_ratio]
+    )
 
-    train_idx = np.searchsorted(cumulative, total * train_ratio)
-    val_idx = np.searchsorted(cumulative, total * (train_ratio + val_ratio))
-
-    train_end_ts = unique_ts[train_idx]
-    val_end_ts = unique_ts[val_idx]
-
-    train_mask = timestamps <= train_end_ts
-    val_mask = (timestamps > train_end_ts) & (timestamps <= val_end_ts)
-    test_mask = timestamps > val_end_ts
+    train_mask = timestamps <= val_time
+    val_mask = (timestamps <= test_time) & (timestamps > val_time)
+    test_mask = timestamps > test_time
 
     return train_mask, val_mask, test_mask
 ```
+
+The TGB-identical split is required when using pre-generated TGB negative pickles, because the pickle is keyed by `(pos_src, pos_dst, pos_ts)` of TGB's val/test positives — any split mismatch would cause KeyError on lookup.
 
 ---
 
 ## 20. Evaluation Protocol
 
 Following TGB protocol. Streaming evaluation — evaluate on each batch's edges before the model sees them as training data. During val/test, embeddings continue updating (EmbeddingTrainer runs after evaluation), link prediction does not train. MRR as primary metric. Transductive.
+
+### Negative sampling modes
+
+Two negative-source modes for val/test evaluation, selected by config:
+
+1. **On-the-fly (default).** `UniformNegativeSampler` — for each positive, samples `negatives_per_positive_eval` random targets uniformly from `[0, max_node_count)`. Fixed K per positive. Returns `[B, K]` arrays.
+
+2. **Pre-generated (TGB pickles).** `FileNegativeSampler` — loads a pickle file containing a dict keyed by `(pos_src, pos_dst, pos_ts)` with values that are 1-D numpy arrays of negative destination node IDs. Source is implicitly the positive's source. Variable N per positive is supported (returns list-of-ndarrays). The evaluator loops per positive when K varies.
+
+Both samplers implement the `NegativeSampler` interface (`sample(batch) → (neg_src, neg_tgt)`) and are injected into the `Evaluator` at construction. Val and test can use different samplers independently (e.g. file-backed val with on-the-fly test, or both file-backed).
+
+Training-time negatives always use `UniformNegativeSampler` (TGB does not ship train negatives).
 
 ---
 
