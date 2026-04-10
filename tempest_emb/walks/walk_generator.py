@@ -1,6 +1,6 @@
 import torch
 
-from _temporal_random_walk import TemporalRandomWalk
+from temporal_random_walk import TemporalRandomWalk
 
 from tempest_emb.config import Config
 from tempest_emb.types import WalkData
